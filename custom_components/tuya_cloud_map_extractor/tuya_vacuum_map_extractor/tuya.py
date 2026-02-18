@@ -1,73 +1,36 @@
-import datetime
-import hmac
-import requests
+def get_download_link(server: str, client_id: str, secret_key: str, device_id: str) -> str:
+    # 1. Получение токена
+    token_url = "/v1.0/token?grant_type=1"
+    token_resp = tuyarequest(server, token_url, client_id, secret_key)
 
-from .const import ServerError, ClientIDError, ClientSecretError, DeviceIDError, NotSupportedError
-
-def _get_sign(client_id: str, secret_key: str, url: str, t: int, token: str):
-    empty_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    signstr = client_id + token + t + "GET" + "\n" + empty_hash + "\n" + "" + "\n" + url
-    return hmac.new(
-        secret_key.encode(), msg=signstr.encode(), digestmod="sha256"
-    ).hexdigest()
-
-def tuyarequest(
-    server: str, url: str, client_id: str, secret_key: str, token=""
-) -> dict:
-    """Handles authentication with provided token and makes request to tuya servers."""
-
-    t = str(int(round(datetime.datetime.timestamp(datetime.datetime.now()) * 1000, 0)))
-    sign = _get_sign(
-        client_id=client_id, secret_key=secret_key, url=url, t=t, token=token
-    )
-    headers = {
-        "sign_method": "HMAC-SHA256",
-        "client_id": client_id,
-        "t": t,
-        "sign": sign.upper(),
-    }
-    if token != "":
-        headers["access_token"] = token
-    return requests.get(url=server + url, headers=headers, timeout=2.5).json()
-
-def get_download_link(
-    server: str, client_id: str, secret_key: str, device_id: str
-) -> str:
-    """Gets the download link of the real time map."""
-
-    url = "/v1.0/token?grant_type=1"
-    response = tuyarequest(
-        server=server, url=url, client_id=client_id, secret_key=secret_key
-    )
-
-    if not response["success"]:
-        if response["msg"] == "clientId is invalid":
+    if not token_resp.get("success"):
+        msg = token_resp.get("msg", "")
+        if msg == "clientId is invalid":
             raise ClientIDError("Invalid Client ID")
-        elif response["msg"] == "sign invalid":
+        elif msg == "sign invalid":
             raise ClientSecretError("Invalid Client Secret")
-        elif "cross-region access is not allowed" in response["msg"]:
+        elif "cross-region access is not allowed" in msg:
             raise ServerError("Wrong server region. Cross-region access is not allowed.")
         else:
-            raise RuntimeError("Request failed - Response: ", response)
+            raise RuntimeError(f"Token request failed: {token_resp}")
 
-    access_token = response["result"]["access_token"]
+    access_token = token_resp.get("result", {}).get("access_token")
+    if not access_token:
+        raise RuntimeError("No access_token in response")
 
-    url = "/v1.0/users/sweepers/file/" + device_id + "/realtime-map"
-    response = tuyarequest(
-        server=server,
-        url=url,
-        client_id=client_id,
-        secret_key=secret_key,
-        token=access_token,
-    )
+    # 2. Запрос ссылки на карту
+    map_url = f"/v1.0/users/sweepers/file/{device_id}/realtime-map"
+    map_resp = tuyarequest(server, map_url, client_id, secret_key, token=access_token)
 
-    if not response["success"]:
-        if response["msg"] == "permission deny":
+    if not map_resp.get("success"):
+        msg = map_resp.get("msg", "")
+        if msg == "permission deny":
             raise DeviceIDError("Invalid Device ID")
         else:
-            raise RuntimeError("Request failed - Response: ", response)
+            raise RuntimeError(f"Map request failed: {map_resp}")
 
-    if not response["result"]:
+    download_link = map_resp.get("result")
+    if not download_link:
         raise NotSupportedError("Vacuum not supported: API returned no realtime maps")
 
-    return response
+    return download_link  # исправлено
